@@ -58,17 +58,19 @@ def check(input_file, batch_id, no_save, no_export, output_dir):
                     _show_import_errors(import_errors)
                 sys.exit(1)
 
-            total = len(merchants)
-            console.print(f"[green]✓[/green] 成功读取 [bold]{total}[/bold] 条商户记录")
+            total_valid = len(merchants)
+            total_raw = total_valid + len(import_errors)
+            console.print(f"[green]✓[/green] 成功读取 [bold]{total_valid}[/bold] 条有效商户记录")
             if import_errors:
                 console.print(f"[yellow]⚠[/yellow] CSV解析错误 [bold]{len(import_errors)}[/bold] 行")
+                console.print(f"[dim]原始清单共 {total_raw} 行（含错误行）[/dim]")
 
-            t2 = progress.add_task("风控规则评估...", total=total)
+            t2 = progress.add_task("风控规则评估...", total=total_valid)
             engine = RiskRuleEngine(cfg)
 
             results = []
             errors = []
-            step = max(1, total // 50)
+            step = max(1, total_valid // 50)
 
             contact_counter = engine._build_contact_counters(merchants)
 
@@ -83,16 +85,18 @@ def check(input_file, batch_id, no_save, no_export, output_dir):
                         "merchant_name": m.merchant_name,
                         "error": str(e)
                     })
-                if (i + 1) % step == 0 or (i + 1) == total:
+                if (i + 1) % step == 0 or (i + 1) == total_valid:
                     progress.update(t2, completed=i + 1)
 
             progress.update(t2, completed=True, description="风控评估完成")
 
         all_errors = import_errors + errors
+        total_count = total_valid + len(errors)
         batch = BatchResult(
             batch_id=batch_id or batch_mgr.generate_batch_id(),
             input_file=input_file,
-            total_count=total,
+            total_count=total_count,
+            valid_count=total_valid - len(errors),
             error_rows=all_errors,
             error_count=len(all_errors),
             results=results
@@ -149,13 +153,15 @@ def _show_summary(batch: BatchResult):
     )
     summary_table.add_column("指标", style="bold")
     summary_table.add_column("数值", justify="right")
-    summary_table.add_column("占比", justify="right")
+    summary_table.add_column("占比(总数)", justify="right")
+    summary_table.add_column("占比(有效)", justify="right")
 
-    summary_table.add_row("总记录数", str(s["total_count"]), "-")
-    summary_table.add_row("[green]通过[/green]", f"[green]{s['pass_count']}[/green]", f"[green]{s['pass_rate']}[/green]")
-    summary_table.add_row("[yellow]需复核[/yellow]", f"[yellow]{s['review_count']}[/yellow]", f"[yellow]{s['review_rate']}[/yellow]")
-    summary_table.add_row("[red]拒绝[/red]", f"[red]{s['reject_count']}[/red]", f"[red]{s['reject_rate']}[/red]")
-    summary_table.add_row("[red]错误[/red]", f"[red]{s['error_count']}[/red]", "-")
+    summary_table.add_row("总记录数(原始)", str(s["total_count"]), "-", "-")
+    summary_table.add_row("有效评估数", str(s["valid_count"]), "-", "-")
+    summary_table.add_row("[green]通过[/green]", f"[green]{s['pass_count']}[/green]", f"[green]{s['pass_rate']}[/green]", f"[green]{s['valid_pass_rate']}[/green]")
+    summary_table.add_row("[yellow]需复核[/yellow]", f"[yellow]{s['review_count']}[/yellow]", f"[yellow]{s['review_rate']}[/yellow]", f"[yellow]{s['valid_review_rate']}[/yellow]")
+    summary_table.add_row("[red]拒绝[/red]", f"[red]{s['reject_count']}[/red]", f"[red]{s['reject_rate']}[/red]", f"[red]{s['valid_reject_rate']}[/red]")
+    summary_table.add_row("[red]错误[/red]", f"[red]{s['error_count']}[/red]", f"[red]{s['error_rate']}[/red]", "-")
 
     console.print()
     console.print(summary_table)

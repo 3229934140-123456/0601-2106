@@ -100,6 +100,7 @@ class BatchResult:
     batch_id: str
     input_file: str
     total_count: int
+    valid_count: int = 0
     pass_count: int = 0
     review_count: int = 0
     reject_count: int = 0
@@ -113,6 +114,7 @@ class BatchResult:
             "batch_id": self.batch_id,
             "input_file": self.input_file,
             "total_count": self.total_count,
+            "valid_count": self.valid_count,
             "pass_count": self.pass_count,
             "review_count": self.review_count,
             "reject_count": self.reject_count,
@@ -120,6 +122,10 @@ class BatchResult:
             "pass_rate": f"{(self.pass_count / self.total_count * 100):.1f}%" if self.total_count > 0 else "0%",
             "review_rate": f"{(self.review_count / self.total_count * 100):.1f}%" if self.total_count > 0 else "0%",
             "reject_rate": f"{(self.reject_count / self.total_count * 100):.1f}%" if self.total_count > 0 else "0%",
+            "valid_pass_rate": f"{(self.pass_count / self.valid_count * 100):.1f}%" if self.valid_count > 0 else "0%",
+            "valid_review_rate": f"{(self.review_count / self.valid_count * 100):.1f}%" if self.valid_count > 0 else "0%",
+            "valid_reject_rate": f"{(self.reject_count / self.valid_count * 100):.1f}%" if self.valid_count > 0 else "0%",
+            "error_rate": f"{(self.error_count / self.total_count * 100):.1f}%" if self.total_count > 0 else "0%",
             "created_at": self.created_at.isoformat()
         }
 
