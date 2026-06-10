@@ -1,0 +1,44 @@
+{
+  "thresholds": {
+    "min_operation_years": 1,
+    "max_volatility_ratio": 0.5,
+    "max_legal_person_change_count": 2,
+    "duplicate_contact_threshold": 3,
+    "pass_score_min": 0,
+    "pass_score_max": 30,
+    "review_score_min": 31,
+    "review_score_max": 70,
+    "reject_score_min": 71
+  },
+  "review_reasons": [
+    "经营年限接近阈值",
+    "交易波动较大需人工确认",
+    "法人变更次数偏多",
+    "地址信息存在异常标记",
+    "联系方式出现重复",
+    "风险分值处于灰区"
+  ],
+  "reject_reasons": [
+    "经营年限不足",
+    "交易波动异常剧烈",
+    "法人变更过于频繁",
+    "黑名单命中",
+    "地址严重异常",
+    "联系方式严重重复"
+  ],
+  "suggested_actions": {
+    "operation_years_low": "要求补充经营证明材料或缩短授信期限",
+    "volatility_high": "要求提供近6个月银行流水并核实交易背景",
+    "legal_person_change": "核实股权变更背景，要求实际控制人担保",
+    "blacklist_hit": "直接拒绝，记录黑名单原因",
+    "address_abnormal": "上门核实经营地址，要求提供租赁合同",
+    "contact_duplicate": "排查关联商户，要求联系人书面说明关系"
+  },
+  "blacklist": [
+    "张三",
+    "13800138007"
+  ],
+  "whitelist": [
+    "M008"
+  ]
+}
