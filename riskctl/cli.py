@@ -1,5 +1,6 @@
 import click
 import sys
+import copy
 from pathlib import Path
 from rich.console import Console
 from rich.table import Table
@@ -34,115 +35,134 @@ def cli():
 @click.option("--no-save", is_flag=True, help="不保存批次结果到本地")
 @click.option("--no-export", is_flag=True, help="不导出CSV分类报告")
 @click.option("--output-dir", "-o", default=None, type=click.Path(), help="报告输出目录")
-def check(input_file, batch_id, no_save, no_export, output_dir):
+@click.option("--config-version", "-V", default=None, help="使用指定配置版本运行")
+def check(input_file, batch_id, no_save, no_export, output_dir, config_version):
     """导入商户清单，批量筛查并生成风险等级"""
     console.rule("[bold blue]商户风控批量筛查")
     console.print(f"[cyan]输入文件:[/cyan] {input_file}")
 
+    used_config_version = ""
+    original_config = None
+    if config_version:
+        vdata = cfg.get_version(config_version)
+        if not vdata:
+            console.print(f"[red]✗ 配置版本不存在:[/red] {config_version}")
+            sys.exit(1)
+        original_config = copy.deepcopy(cfg.get_all())
+        cfg.load_version(config_version)
+        used_config_version = vdata.get("name", config_version)
+        console.print(f"[cyan]配置版本:[/cyan] {used_config_version}")
+
     try:
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TaskProgressColumn(),
-            TimeElapsedColumn(),
-            console=console
-        ) as progress:
-            t1 = progress.add_task("读取CSV文件...", total=None)
-            merchants, import_errors, total_raw_rows = DataImporter.read_csv(input_file)
-            progress.update(t1, completed=True, description="CSV读取完成")
+        try:
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                TaskProgressColumn(),
+                TimeElapsedColumn(),
+                console=console
+            ) as progress:
+                t1 = progress.add_task("读取CSV文件...", total=None)
+                merchants, import_errors, total_raw_rows = DataImporter.read_csv(input_file)
+                progress.update(t1, completed=True, description="CSV读取完成")
 
-            if not merchants and not import_errors:
-                console.print("[red]CSV文件没有任何数据行[/red]")
-                sys.exit(1)
+                if not merchants and not import_errors:
+                    console.print("[red]CSV文件没有任何数据行[/red]")
+                    sys.exit(1)
 
-            if not merchants:
-                console.print("[red]没有可处理的有效商户数据[/red]")
+                if not merchants:
+                    console.print("[red]没有可处理的有效商户数据[/red]")
+                    if import_errors:
+                        _show_import_errors(import_errors)
+                    sys.exit(1)
+
+                total_valid = len(merchants)
+                console.print(f"[green]✓[/green] 原始清单共 [bold]{total_raw_rows}[/bold] 行")
+                console.print(f"[green]✓[/green] 成功解析 [bold]{total_valid}[/bold] 条有效商户记录")
                 if import_errors:
-                    _show_import_errors(import_errors)
-                sys.exit(1)
+                    console.print(f"[yellow]⚠[/yellow] CSV解析错误 [bold]{len(import_errors)}[/bold] 行")
 
-            total_valid = len(merchants)
-            console.print(f"[green]✓[/green] 原始清单共 [bold]{total_raw_rows}[/bold] 行")
-            console.print(f"[green]✓[/green] 成功解析 [bold]{total_valid}[/bold] 条有效商户记录")
-            if import_errors:
-                console.print(f"[yellow]⚠[/yellow] CSV解析错误 [bold]{len(import_errors)}[/bold] 行")
+                t2 = progress.add_task("风控规则评估...", total=total_valid)
+                engine = RiskRuleEngine(cfg)
 
-            t2 = progress.add_task("风控规则评估...", total=total_valid)
-            engine = RiskRuleEngine(cfg)
+                results = []
+                errors = []
+                step = max(1, total_valid // 50)
 
-            results = []
-            errors = []
-            step = max(1, total_valid // 50)
+                contact_counter = engine._build_contact_counters(merchants)
 
-            contact_counter = engine._build_contact_counters(merchants)
+                for i, m in enumerate(merchants):
+                    try:
+                        r = engine._evaluate_single(m, contact_counter)
+                        results.append(r)
+                    except Exception as e:
+                        errors.append({
+                            "row_number": m.row_number,
+                            "merchant_id": m.merchant_id,
+                            "merchant_name": m.merchant_name,
+                            "error": str(e)
+                        })
+                    if (i + 1) % step == 0 or (i + 1) == total_valid:
+                        progress.update(t2, completed=i + 1)
 
-            for i, m in enumerate(merchants):
-                try:
-                    r = engine._evaluate_single(m, contact_counter)
-                    results.append(r)
-                except Exception as e:
-                    errors.append({
-                        "row_number": m.row_number,
-                        "merchant_id": m.merchant_id,
-                        "merchant_name": m.merchant_name,
-                        "error": str(e)
-                    })
-                if (i + 1) % step == 0 or (i + 1) == total_valid:
-                    progress.update(t2, completed=i + 1)
+                progress.update(t2, completed=True, description="风控评估完成")
 
-            progress.update(t2, completed=True, description="风控评估完成")
+            all_errors = import_errors + errors
+            batch = BatchResult(
+                batch_id=batch_id or batch_mgr.generate_batch_id(),
+                input_file=input_file,
+                total_count=total_raw_rows,
+                valid_count=len(results),
+                error_rows=all_errors,
+                error_count=len(all_errors),
+                results=results,
+                config_version=used_config_version
+            )
 
-        all_errors = import_errors + errors
-        batch = BatchResult(
-            batch_id=batch_id or batch_mgr.generate_batch_id(),
-            input_file=input_file,
-            total_count=total_raw_rows,
-            valid_count=len(results),
-            error_rows=all_errors,
-            error_count=len(all_errors),
-            results=results
-        )
+            pass_list = [r for r in results if r.final_decision == RiskLevel.PASS]
+            review_list = [r for r in results if r.final_decision == RiskLevel.REVIEW]
+            reject_list = [r for r in results if r.final_decision == RiskLevel.REJECT]
 
-        pass_list = [r for r in results if r.final_decision == RiskLevel.PASS]
-        review_list = [r for r in results if r.final_decision == RiskLevel.REVIEW]
-        reject_list = [r for r in results if r.final_decision == RiskLevel.REJECT]
+            batch.pass_count = len(pass_list)
+            batch.review_count = len(review_list)
+            batch.reject_count = len(reject_list)
 
-        batch.pass_count = len(pass_list)
-        batch.review_count = len(review_list)
-        batch.reject_count = len(reject_list)
+            _show_summary(batch)
 
-        _show_summary(batch)
+            if all_errors:
+                _show_import_errors(all_errors)
 
-        if all_errors:
-            _show_import_errors(all_errors)
+            if not no_save:
+                saved = batch_mgr.save_batch(batch)
+                console.print(f"\n[green]✓[/green] 批次结果已保存: [link=file://{saved}]{saved}[/link]")
 
-        if not no_save:
-            saved = batch_mgr.save_batch(batch)
-            console.print(f"\n[green]✓[/green] 批次结果已保存: [link=file://{saved}]{saved}[/link]")
+            if not no_export:
+                exported = batch_mgr.export_csv(batch, output_dir)
+                console.print(f"[green]✓[/green] CSV报告已导出:")
+                for k, v in exported.items():
+                    label = {"pass": "通过", "review": "复核", "reject": "拒绝", "errors": "错误"}.get(k, k)
+                    console.print(f"    - {label}: [link=file://{v}]{v}[/link]")
 
-        if not no_export:
-            exported = batch_mgr.export_csv(batch, output_dir)
-            console.print(f"[green]✓[/green] CSV报告已导出:")
-            for k, v in exported.items():
-                label = {"pass": "通过", "review": "复核", "reject": "拒绝", "errors": "错误"}.get(k, k)
-                console.print(f"    - {label}: [link=file://{v}]{v}[/link]")
+            console.print(f"\n[dim]批次号: {batch.batch_id}[/dim]")
+            console.print("[dim]使用 'riskctl explain <批次号> <商户ID>' 查看单个商户详情[/dim]")
+            console.print("[dim]使用 'riskctl report <批次号>' 输出分类报告[/dim]")
 
-        console.print(f"\n[dim]批次号: {batch.batch_id}[/dim]")
-        console.print("[dim]使用 'riskctl explain <批次号> <商户ID>' 查看单个商户详情[/dim]")
-        console.print("[dim]使用 'riskctl report <批次号>' 输出分类报告[/dim]")
-
-    except FileNotFoundError as e:
-        console.print(f"[red]✗ 文件错误:[/red] {e}")
-        sys.exit(1)
-    except ValueError as e:
-        console.print(f"[red]✗ 数据错误:[/red] {e}")
-        sys.exit(1)
-    except Exception as e:
-        console.print(f"[red]✗ 未知错误:[/red] {e}")
-        import traceback
-        console.print(traceback.format_exc())
-        sys.exit(1)
+        except FileNotFoundError as e:
+            console.print(f"[red]✗ 文件错误:[/red] {e}")
+            sys.exit(1)
+        except ValueError as e:
+            console.print(f"[red]✗ 数据错误:[/red] {e}")
+            sys.exit(1)
+        except Exception as e:
+            console.print(f"[red]✗ 未知错误:[/red] {e}")
+            import traceback
+            console.print(traceback.format_exc())
+            sys.exit(1)
+    finally:
+        if original_config is not None:
+            cfg._config = original_config
+            cfg._save_config(original_config)
 
 
 def _show_summary(batch: BatchResult):
@@ -484,10 +504,15 @@ def config_show(section):
 
 @config.command("set-threshold")
 @click.argument("key")
-@click.argument("value")
+@click.option("--value", "-v", "value", required=True, help="阈值数值（支持负数，不会被识别为选项）")
 @click.option("--force", "-f", is_flag=True, help="强制写入，跳过区间一致性校验")
 def config_set_threshold(key, value, force):
-    """设置阈值参数，如 min_operation_years 1"""
+    """设置阈值参数，如 set-threshold min_operation_years -v 1
+
+    KEY为阈值参数名，使用 -v/--value 指定数值（支持负数）。
+    例: riskctl config set-threshold min_operation_years -v 1.5
+        riskctl config set-threshold pass_score_max -v 40
+    """
     try:
         val = cfg.validate_threshold_value(key, value)
     except ValueError as e:
@@ -500,7 +525,7 @@ def config_set_threshold(key, value, force):
         console.print(
             f"[yellow]⚠ 分数区间一致性警告:[/yellow]\n{issue_lines}\n\n"
             f"[dim]如需强制设置，请加 --force 参数:[/dim]\n"
-            f"  riskctl config set-threshold {key} {value} --force"
+            f"  riskctl config set-threshold {key} -v {value} --force"
         )
         sys.exit(1)
 
@@ -583,6 +608,132 @@ def config_reset():
     console.print("[green]✓ 配置已重置为默认值[/green]")
 
 
+@config.command("save-version")
+@click.argument("name")
+@click.option("--desc", "-d", "description", default="", help="版本描述")
+def config_save_version(name, description):
+    """将当前配置保存为一个命名版本"""
+    try:
+        ok = cfg.save_version(name, description)
+        if ok:
+            console.print(f"[green]✓ 配置版本已保存:[/green] {name}")
+        else:
+            console.print(f"[yellow]⚠ 版本已存在:[/yellow] {name}")
+            console.print("[dim]如需覆盖请先删除旧版本: riskctl config delete-version <name>[/dim]")
+    except ValueError as e:
+        console.print(f"[red]✗ 保存失败:[/red] {e}")
+        sys.exit(1)
+
+
+@config.command("list-versions")
+def config_list_versions():
+    """列出所有配置版本"""
+    versions = cfg.list_versions()
+    if not versions:
+        console.print("[yellow]暂无配置版本[/yellow]")
+        console.print("[dim]使用 'riskctl config save-version <名称>' 保存当前配置[/dim]")
+        return
+    t = Table(title="[bold]配置版本列表[/bold]", box=box.ROUNDED, header_style="bold cyan")
+    t.add_column("版本名", style="bold")
+    t.add_column("描述")
+    t.add_column("创建时间", style="dim")
+    for v in versions:
+        t.add_row(v["name"], v.get("description", ""), v.get("created_at", "")[:19].replace("T", " "))
+    console.print(t)
+
+
+@config.command("diff-version")
+@click.argument("version_a")
+@click.argument("version_b")
+def config_diff_version(version_a, version_b):
+    """对比两个配置版本的差异"""
+    try:
+        diffs = cfg.diff_versions(version_a, version_b)
+    except ValueError as e:
+        console.print(f"[red]✗ {e}[/red]")
+        sys.exit(1)
+
+    if not diffs:
+        console.print(f"[green]✓ 两个版本完全一致[/green]")
+        return
+
+    t = Table(
+        title=f"[bold]配置版本差异: {version_a} → {version_b}[/bold]",
+        box=box.ROUNDED,
+        header_style="bold magenta"
+    )
+    t.add_column("配置项", style="bold")
+    t.add_column(f"{version_a}", style="dim")
+    t.add_column("变化", style="yellow")
+    t.add_column(f"{version_b}", style="green")
+
+    for d in diffs:
+        path = d["path"]
+        if "added" in d:
+            added_str = "\n".join(f"+ {x}" for x in d["added"]) if d["added"] else ""
+            removed_str = "\n".join(f"- {x}" for x in d["removed"]) if d["removed"] else ""
+            va_val = removed_str
+            vb_val = added_str
+            change = d["change"]
+        else:
+            va_val = str(d["value_a"])
+            vb_val = str(d["value_b"])
+            change = ""
+        t.add_row(path, va_val, change, vb_val)
+
+    console.print(t)
+    console.print(f"[dim]共 {len(diffs)} 处差异[/dim]")
+
+
+@config.command("rollback-version")
+@click.argument("name")
+@click.option("--yes", "-y", is_flag=True, help="跳过确认")
+def config_rollback_version(name, yes):
+    """回滚到指定配置版本（覆盖当前配置）"""
+    version_data = cfg.get_version(name)
+    if not version_data:
+        console.print(f"[red]✗ 版本不存在:[/red] {name}")
+        sys.exit(1)
+
+    if not yes:
+        console.print(f"[yellow]即将回滚配置到版本: [bold]{name}[/bold][/yellow]")
+        console.print(f"[dim]  描述: {version_data.get('description', '(无)')}[/dim]")
+        console.print(f"[dim]  创建: {version_data.get('created_at', '')[:19]}[/dim]")
+        if not click.confirm("确定要覆盖当前配置吗？", default=False):
+            console.print("[dim]已取消[/dim]")
+            return
+
+    ok = cfg.load_version(name)
+    if ok:
+        console.print(f"[green]✓ 配置已回滚到版本:[/green] {name}")
+    else:
+        console.print(f"[red]✗ 回滚失败:[/red] {name}")
+        sys.exit(1)
+
+
+@config.command("delete-version")
+@click.argument("name")
+@click.option("--yes", "-y", is_flag=True, help="跳过确认")
+def config_delete_version(name, yes):
+    """删除指定配置版本"""
+    version_data = cfg.get_version(name)
+    if not version_data:
+        console.print(f"[red]✗ 版本不存在:[/red] {name}")
+        sys.exit(1)
+
+    if not yes:
+        if not click.confirm(f"确定要删除配置版本 '{name}' 吗？", default=False):
+            console.print("[dim]已取消[/dim]")
+            return
+
+    ok = cfg.delete_version(name)
+    if ok:
+        console.print(f"[green]✓ 版本已删除:[/green] {name}")
+    else:
+        console.print(f"[red]✗ 删除失败:[/red] {name}")
+        sys.exit(1)
+
+
 @cli.command()
 @click.option("--limit", "-n", type=int, default=20, help="显示最近N个批次（默认20）")
 def history(limit):
@@ -608,11 +759,13 @@ def history(limit):
     t.add_column("拒绝", justify="right", style="red")
     t.add_column("错误", justify="right", style="magenta")
     t.add_column("通过率", justify="right")
+    t.add_column("配置版本", style="cyan")
     t.add_column("创建时间")
 
     for i, b in enumerate(batches, 1):
         total = b["total"]
         pass_rate = f"{(b['pass']/total*100):.0f}%" if total > 0 else "0%"
+        cfg_ver = b.get("config_version", "") or "-"
         t.add_row(
             str(i),
             b["batch_id"],
@@ -623,6 +776,7 @@ def history(limit):
             str(b["reject"]),
             str(b["error"]),
             pass_rate,
+            cfg_ver,
             b["created_at"].replace("T", " ")[:19]
         )
     console.print(t)
@@ -871,9 +1025,243 @@ def compare(batch_id_a, batch_id_b, top_rules):
 
 
 @cli.command()
+@click.option("--limit", "-n", type=int, default=20, help="显示最近N个批次（默认20）")
+@click.option("--days", type=int, default=None, help="最近N天的批次")
+@click.option("--from", "from_date", default=None, help="起始日期（YYYY-MM-DD）")
+@click.option("--to", "to_date", default=None, help="结束日期（YYYY-MM-DD）")
+@click.option("--top-rules", type=int, default=10, help="显示前N个规则（默认10）")
+def trend(limit, days, from_date, to_date, top_rules):
+    """多批次趋势汇总：通过率/拒绝率/规则命中变化"""
+    from datetime import datetime, timedelta
+
+    batches_list = batch_mgr.list_batches(limit=200)
+    if not batches_list:
+        console.print("[yellow]暂无历史批次记录[/yellow]")
+        return
+
+    filtered = []
+    for b in batches_list:
+        bdt = datetime.fromisoformat(b["created_at"].replace("Z", ""))
+        include = True
+        if days:
+            cutoff = datetime.now() - timedelta(days=days)
+            if bdt < cutoff:
+                include = False
+        if from_date:
+            try:
+                fd = datetime.strptime(from_date, "%Y-%m-%d")
+                if bdt.date() < fd.date():
+                    include = False
+            except ValueError:
+                console.print(f"[red]✗ 起始日期格式错误:[/red] {from_date}（应为 YYYY-MM-DD）")
+                sys.exit(1)
+        if to_date:
+            try:
+                td = datetime.strptime(to_date, "%Y-%m-%d") + timedelta(days=1)
+                if bdt >= td:
+                    include = False
+            except ValueError:
+                console.print(f"[red]✗ 结束日期格式错误:[/red] {to_date}（应为 YYYY-MM-DD）")
+                sys.exit(1)
+        if include:
+            filtered.append(b)
+
+    if not filtered:
+        console.print("[yellow]筛选条件内没有批次记录[/yellow]")
+        return
+
+    if limit and len(filtered) > limit:
+        filtered = filtered[:limit]
+
+    filtered = list(reversed(filtered))
+
+    console.rule(f"[bold blue]批次趋势汇总（{len(filtered)} 个批次）")
+    if filtered:
+        first_dt = filtered[0]["created_at"][:10]
+        last_dt = filtered[-1]["created_at"][:10]
+        console.print(f"  [cyan]时间范围:[/cyan] {first_dt} ~ {last_dt}")
+        total_all = sum(b["total"] for b in filtered)
+        console.print(f"  [cyan]总原始行:[/cyan] {total_all}")
+
+    t = Table(
+        title="[bold]批次指标趋势[/bold]",
+        box=box.ROUNDED,
+        header_style="bold cyan",
+        show_lines=False
+    )
+    t.add_column("#", justify="right", width=3)
+    t.add_column("日期", style="dim")
+    t.add_column("批次号", style="bold")
+    t.add_column("原始行", justify="right")
+    t.add_column("通过", justify="right", style="green")
+    t.add_column("复核", justify="right", style="yellow")
+    t.add_column("拒绝", justify="right", style="red")
+    t.add_column("错误", justify="right", style="magenta")
+    t.add_column("通过率", justify="right")
+    t.add_column("配置版本", style="cyan")
+
+    for i, b in enumerate(filtered, 1):
+        total = b["total"]
+        pass_rate = f"{(b['pass']/total*100):.1f}%" if total > 0 else "0%"
+        cfg_ver = b.get("config_version", "") or "-"
+        t.add_row(
+            str(i),
+            b["created_at"][5:16].replace("T", " "),
+            b["batch_id"][:18] + "..." if len(b["batch_id"]) > 18 else b["batch_id"],
+            str(total),
+            str(b["pass"]),
+            str(b["review"]),
+            str(b["reject"]),
+            str(b["error"]),
+            pass_rate,
+            cfg_ver
+        )
+    console.print(t)
+
+    if len(filtered) >= 2:
+        first = filtered[0]
+        last = filtered[-1]
+        ft = first["total"] or 1
+        lt = last["total"] or 1
+        fp = first["pass"] / ft * 100
+        lp = last["pass"] / lt * 100
+        fr = first["reject"] / ft * 100
+        lr = last["reject"] / lt * 100
+        fe = first["error"] / ft * 100
+        le = last["error"] / lt * 100
+
+        delta_p = lp - fp
+        delta_r = lr - fr
+        delta_e = le - fe
+
+        def _fmt_delta(d, reverse=False):
+            sign = "+" if d >= 0 else ""
+            color = "red" if (d > 0 and not reverse) or (d < 0 and reverse) else "green"
+            if abs(d) < 0.1:
+                return f"[dim]{sign}{d:.1f}pp[/dim]"
+            return f"[{color}]{sign}{d:.1f}pp[/{color}]"
+
+        sum_table = Table(
+            title="[bold]首末批次对比[/bold]",
+            box=box.SIMPLE,
+            header_style="bold magenta"
+        )
+        sum_table.add_column("指标", style="bold")
+        sum_table.add_column("首批", justify="right")
+        sum_table.add_column("末批", justify="right")
+        sum_table.add_column("变化", justify="right")
+        sum_table.add_row("通过率", f"{fp:.1f}%", f"{lp:.1f}%", _fmt_delta(delta_p, reverse=True))
+        sum_table.add_row("拒绝率", f"{fr:.1f}%", f"{lr:.1f}%", _fmt_delta(delta_r, reverse=False))
+        sum_table.add_row("错误率", f"{fe:.1f}%", f"{le:.1f}%", _fmt_delta(delta_e, reverse=False))
+        console.print(sum_table)
+
+    console.rule("[bold][magenta]规则命中趋势[/magenta][/bold]")
+
+    rule_stats = {}
+    for b in filtered:
+        batch = batch_mgr.load_batch(b["batch_id"])
+        if not batch:
+            continue
+        total = b["total"] or 1
+        for r in batch.results:
+            for h in r.rule_hits:
+                code = h.rule_code
+                if code not in rule_stats:
+                    rule_stats[code] = {
+                        "name": h.rule_name,
+                        "batch_counts": [0] * len(filtered),
+                        "batch_ratios": [0.0] * len(filtered),
+                        "total_count": 0
+                    }
+                batch_idx = [i for i, x in enumerate(filtered) if x["batch_id"] == b["batch_id"]][0]
+                rule_stats[code]["batch_counts"][batch_idx] += 1
+                rule_stats[code]["total_count"] += 1
+
+    if not rule_stats:
+        console.print("[dim]没有规则命中数据[/dim]")
+        return
+
+    for code, stats in rule_stats.items():
+        for i, b in enumerate(filtered):
+            total = b["total"] or 1
+            stats["batch_ratios"][i] = stats["batch_counts"][i] / total * 100
+
+    def _trend_direction(ratios):
+        if len(ratios) < 2:
+            return 0
+        first_half = sum(ratios[:len(ratios)//2]) / (len(ratios)//2 or 1)
+        second_half = sum(ratios[len(ratios)//2:]) / len(ratios[len(ratios)//2:])
+        return second_half - first_half
+
+    sorted_rules = sorted(
+        rule_stats.items(),
+        key=lambda x: -_trend_direction(x[1]["batch_ratios"])
+    )[:top_rules]
+
+    rt = Table(
+        title=f"[bold]规则命中趋势（TOP{len(sorted_rules)}，按升幅排序）[/bold]",
+        box=box.ROUNDED,
+        header_style="bold red"
+    )
+    rt.add_column("规则", style="bold")
+    for i, b in enumerate(filtered, 1):
+        rt.add_column(f"P{i}", justify="right")
+    rt.add_column("变化", justify="right")
+    rt.add_column("趋势", justify="center")
+
+    for code, stats in sorted_rules:
+        row_vals = []
+        for i in range(len(filtered)):
+            pct = stats["batch_ratios"][i]
+            if pct == 0:
+                row_vals.append("[dim]-[/dim]")
+            else:
+                row_vals.append(f"{pct:.1f}%")
+        delta = _trend_direction(stats["batch_ratios"])
+        if delta >= 2:
+            trend_mark = "[red]▲▲[/red]"
+            delta_str = f"[bold red]+{delta:.1f}pp[/bold red]"
+        elif delta >= 0.5:
+            trend_mark = "[yellow]▲[/yellow]"
+            delta_str = f"[yellow]+{delta:.1f}pp[/yellow]"
+        elif delta <= -2:
+            trend_mark = "[green]▼▼[/green]"
+            delta_str = f"[green]{delta:.1f}pp[/green]"
+        elif delta <= -0.5:
+            trend_mark = "[green]▼[/green]"
+            delta_str = f"[green]{delta:.1f}pp[/green]"
+        else:
+            trend_mark = "[dim]—[/dim]"
+            delta_str = f"[dim]{delta:+.1f}pp[/dim]"
+
+        rt.add_row(stats["name"], *row_vals, delta_str, trend_mark)
+
+    console.print(rt)
+
+    rising_rules = [(code, stats) for code, stats in sorted_rules
+                    if _trend_direction(stats["batch_ratios"]) >= 1]
+    if rising_rules:
+        console.print()
+        rising_text = "\n".join(
+            f"  • [red]{s['name']}[/red]（+{_trend_direction(s['batch_ratios']):.1f}pp）"
+            for _, s in rising_rules[:5]
+        )
+        console.print(Panel(
+            rising_text,
+            title="[bold red]⚠ 风险升高规则[/bold red]",
+            border_style="red",
+            subtitle=f"共 {len(rising_rules)} 项规则命中呈上升趋势"
+        ))
+
+    console.print("\n[dim]提示: 趋势=后段平均 - 前段平均；▲▲ ≥2pp 显著升高，▲ ≥0.5pp 微升[/dim]")
+
+
+@cli.command()
 @click.argument("merchant_id")
 @click.option("--show-hits", "-d", is_flag=True, help="显示每次筛查的命中项详情")
-def merchant(merchant_id, show_hits):
+@click.option("--export", "-o", "export_path", default=None, type=click.Path(), help="导出轨迹到文件（CSV/JSON）")
+@click.option("--format", "-f", "export_format", default=None, type=click.Choice(["csv", "json"]), help="导出格式（默认按扩展名推断）")
+def merchant(merchant_id, show_hits, export_path, export_format):
     """按商户编号查询历史筛查记录与分数变化"""
     batches = batch_mgr.list_batches(limit=200)
     records = []
@@ -893,10 +1281,12 @@ def merchant(merchant_id, show_hits):
                     "score": r.risk_score,
                     "level": r.final_decision,
                     "level_display": r.final_decision.display_name,
+                    "level_value": r.final_decision.value,
                     "reason": r.review_reason,
                     "whitelisted": r.is_whitelisted,
                     "rule_hits": r.rule_hits,
-                    "hit_count": len(r.rule_hits)
+                    "hit_count": len(r.rule_hits),
+                    "config_version": b_meta.get("config_version", "") or ""
                 })
                 break
 
@@ -1033,6 +1423,84 @@ def merchant(merchant_id, show_hits):
                       f"| {r['level_display']} | {r['score']}分{tag}[/bold]",
                 border_style=r["level"].color
             ))
+
+    if export_path:
+        fmt = export_format
+        if not fmt:
+            ext = Path(export_path).suffix.lower()
+            if ext == ".json":
+                fmt = "json"
+            elif ext == ".csv":
+                fmt = "csv"
+            else:
+                console.print(f"[red]✗ 无法推断导出格式，请用 --format 指定 csv 或 json[/red]")
+                sys.exit(1)
+
+        out_path = Path(export_path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if fmt == "json":
+            export_data = []
+            for r in records:
+                hits_data = [
+                    {
+                        "rule_code": h.rule_code,
+                        "rule_name": h.rule_name,
+                        "severity": h.severity,
+                        "message": h.message,
+                        "suggested_action": h.suggested_action
+                    }
+                    for h in r["rule_hits"]
+                ]
+                export_data.append({
+                    "batch_id": r["batch_id"],
+                    "screen_time": r["created_at"].isoformat(),
+                    "merchant_id": r["merchant_id"],
+                    "merchant_name": r["merchant_name"],
+                    "risk_score": r["score"],
+                    "risk_level": r["level_value"],
+                    "risk_level_display": r["level_display"],
+                    "review_reason": r["reason"] or "",
+                    "hit_count": r["hit_count"],
+                    "rule_hits": hits_data,
+                    "config_version": r["config_version"],
+                    "input_file": r["input_file"]
+                })
+            import json as _json
+            with open(out_path, "w", encoding="utf-8") as f:
+                _json.dump(export_data, f, ensure_ascii=False, indent=2)
+            console.print(f"\n[green]✓ 已导出 JSON:[/green] [link=file://{out_path}]{out_path}[/link]")
+
+        elif fmt == "csv":
+            import csv as _csv
+            with open(out_path, "w", encoding="utf-8-sig", newline="") as f:
+                writer = _csv.writer(f)
+                writer.writerow([
+                    "序号", "批次号", "筛查时间", "商户编号", "商户名称",
+                    "风险分数", "风险等级", "等级说明", "命中项数",
+                    "命中规则编码", "命中规则名称", "复核原因",
+                    "配置版本", "来源文件"
+                ])
+                for i, r in enumerate(records, 1):
+                    hit_codes = ";".join(h.rule_code for h in r["rule_hits"])
+                    hit_names = ";".join(h.rule_name for h in r["rule_hits"])
+                    writer.writerow([
+                        i,
+                        r["batch_id"],
+                        r["created_at"].strftime("%Y-%m-%d %H:%M:%S"),
+                        r["merchant_id"],
+                        r["merchant_name"],
+                        r["score"],
+                        r["level_value"],
+                        r["level_display"],
+                        r["hit_count"],
+                        hit_codes,
+                        hit_names,
+                        r["reason"] or "",
+                        r["config_version"],
+                        r["input_file"]
+                    ])
+            console.print(f"\n[green]✓ 已导出 CSV:[/green] [link=file://{out_path}]{out_path}[/link]")
 
 
 def main():

@@ -108,6 +108,7 @@ class BatchResult:
     error_rows: List[Dict[str, Any]] = field(default_factory=list)
     results: List[MerchantRiskResult] = field(default_factory=list)
     created_at: datetime = field(default_factory=datetime.now)
+    config_version: str = ""
 
     def summary(self) -> Dict[str, Any]:
         return {
@@ -126,7 +127,8 @@ class BatchResult:
             "valid_review_rate": f"{(self.review_count / self.valid_count * 100):.1f}%" if self.valid_count > 0 else "0%",
             "valid_reject_rate": f"{(self.reject_count / self.valid_count * 100):.1f}%" if self.valid_count > 0 else "0%",
             "error_rate": f"{(self.error_count / self.total_count * 100):.1f}%" if self.total_count > 0 else "0%",
-            "created_at": self.created_at.isoformat()
+            "created_at": self.created_at.isoformat(),
+            "config_version": self.config_version
         }
 
     def get_pass_list(self) -> List[MerchantRiskResult]:

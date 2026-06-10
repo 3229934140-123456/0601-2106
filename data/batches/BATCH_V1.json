@@ -1,0 +1,296 @@
+{
+  "batch_id": "BATCH_V1",
+  "input_file": "data/samples/merchants_sample.csv",
+  "total_count": 12,
+  "valid_count": 10,
+  "pass_count": 7,
+  "review_count": 2,
+  "reject_count": 1,
+  "error_count": 2,
+  "error_rows": [
+    {
+      "row_number": 12,
+      "merchant_id": "M011",
+      "merchant_name": "",
+      "error": "商户名称不能为空",
+      "raw_data": {
+        "merchant_id": "M011",
+        "merchant_name": "",
+        "operation_years": "1.0",
+        "revenue_last_month": "100000",
+        "revenue_month_before": "95000",
+        "revenue_3months_ago": "90000",
+        "legal_person_change_count": "0",
+        "legal_person_name": "陈十三",
+        "address": "重庆市渝中区解放碑1000号",
+        "address_status": "正常",
+        "phone": "13800138011",
+        "contact_person": "陈十三",
+        "id_card": "500101198810100123",
+        "industry": "贸易"
+      }
+    },
+    {
+      "row_number": 13,
+      "merchant_id": "M012",
+      "merchant_name": "华达服装",
+      "error": "经营年限 格式错误: 'abc'，应为数字",
+      "raw_data": {
+        "merchant_id": "M012",
+        "merchant_name": "华达服装",
+        "operation_years": "abc",
+        "revenue_last_month": "150000",
+        "revenue_month_before": "140000",
+        "revenue_3months_ago": "130000",
+        "legal_person_change_count": "0",
+        "legal_person_name": "褚十四",
+        "address": "苏州市工业园区金鸡湖1100号",
+        "address_status": "正常",
+        "phone": "13800138012",
+        "contact_person": "褚十四",
+        "id_card": "320501199111111234",
+        "industry": "服装"
+      }
+    }
+  ],
+  "results": [
+    {
+      "row_number": 2,
+      "merchant_id": "M001",
+      "merchant_name": "阳光便利店",
+      "risk_score": 0,
+      "risk_level": "PASS",
+      "final_decision": "PASS",
+      "final_decision_display": "通过",
+      "is_whitelisted": false,
+      "review_reason": "",
+      "rule_hits": [],
+      "processed_at": "2026-06-11T03:22:03.653053"
+    },
+    {
+      "row_number": 3,
+      "merchant_id": "M002",
+      "merchant_name": "诚信批发部",
+      "risk_score": 50,
+      "risk_level": "REVIEW",
+      "final_decision": "REVIEW",
+      "final_decision_display": "需复核",
+      "is_whitelisted": false,
+      "review_reason": "风险分值处于灰区",
+      "rule_hits": [
+        {
+          "rule_code": "RULE_YEARS_001",
+          "rule_name": "经营年限不足",
+          "severity": 50,
+          "message": "经营年限 0.5 年，低于最低要求 1 年",
+          "suggested_action": "要求补充经营证明材料或缩短授信期限",
+          "details": {
+            "current": 0.5,
+            "threshold": 1
+          }
+        }
+      ],
+      "processed_at": "2026-06-11T03:22:03.653053"
+    },
+    {
+      "row_number": 4,
+      "merchant_id": "M003",
+      "merchant_name": "宏达商贸",
+      "risk_score": 25,
+      "risk_level": "PASS",
+      "final_decision": "PASS",
+      "final_decision_display": "通过",
+      "is_whitelisted": false,
+      "review_reason": "",
+      "rule_hits": [
+        {
+          "rule_code": "RULE_VOL_002",
+          "rule_name": "交易波动较大",
+          "severity": 25,
+          "message": "近3月交易波动率 53.12%，超过阈值 50%",
+          "suggested_action": "要求提供近6个月银行流水并核实交易背景",
+          "details": {
+            "volatility": 0.53125,
+            "threshold": 0.5,
+            "revenues": [
+              320000.0,
+              150000.0,
+              300000.0
+            ]
+          }
+        }
+      ],
+      "processed_at": "2026-06-11T03:22:03.653053"
+    },
+    {
+      "row_number": 5,
+      "merchant_id": "M004",
+      "merchant_name": "恒通建材",
+      "risk_score": 20,
+      "risk_level": "PASS",
+      "final_decision": "PASS",
+      "final_decision_display": "通过",
+      "is_whitelisted": false,
+      "review_reason": "",
+      "rule_hits": [
+        {
+          "rule_code": "RULE_LEGAL_002",
+          "rule_name": "法人变更次数偏多",
+          "severity": 20,
+          "message": "近1年法人变更 3 次，超过阈值 2 次",
+          "suggested_action": "核实股权变更背景，要求实际控制人担保",
+          "details": {
+            "changes": 3,
+            "threshold": 2
+          }
+        }
+      ],
+      "processed_at": "2026-06-11T03:22:03.653053"
+    },
+    {
+      "row_number": 6,
+      "merchant_id": "M005",
+      "merchant_name": "鸿运餐饮",
+      "risk_score": 33,
+      "risk_level": "REVIEW",
+      "final_decision": "REVIEW",
+      "final_decision_display": "需复核",
+      "is_whitelisted": false,
+      "review_reason": "经营年限接近阈值；地址信息存在异常标记",
+      "rule_hits": [
+        {
+          "rule_code": "RULE_YEARS_002",
+          "rule_name": "经营年限接近阈值",
+          "severity": 15,
+          "message": "经营年限 1.2 年，接近阈值 1 年",
+          "suggested_action": "要求补充经营证明材料或缩短授信期限",
+          "details": {
+            "current": 1.2,
+            "threshold": 1
+          }
+        },
+        {
+          "rule_code": "RULE_ADDR_002",
+          "rule_name": "地址存在异常标记",
+          "severity": 18,
+          "message": "经营地址状态待核实：待核实",
+          "suggested_action": "上门核实经营地址，要求提供租赁合同",
+          "details": {
+            "status": "待核实"
+          }
+        }
+      ],
+      "processed_at": "2026-06-11T03:22:03.653053"
+    },
+    {
+      "row_number": 7,
+      "merchant_id": "M006",
+      "merchant_name": "利群超市",
+      "risk_score": 0,
+      "risk_level": "PASS",
+      "final_decision": "PASS",
+      "final_decision_display": "通过",
+      "is_whitelisted": false,
+      "review_reason": "",
+      "rule_hits": [],
+      "processed_at": "2026-06-11T03:22:03.653053"
+    },
+    {
+      "row_number": 8,
+      "merchant_id": "M007",
+      "merchant_name": "泰康药店",
+      "risk_score": 245,
+      "risk_level": "REJECT",
+      "final_decision": "REJECT",
+      "final_decision_display": "拒绝",
+      "is_whitelisted": false,
+      "review_reason": "黑名单命中",
+      "rule_hits": [
+        {
+          "rule_code": "RULE_YEARS_001",
+          "rule_name": "经营年限不足",
+          "severity": 50,
+          "message": "经营年限 0.3 年，低于最低要求 1 年",
+          "suggested_action": "要求补充经营证明材料或缩短授信期限",
+          "details": {
+            "current": 0.3,
+            "threshold": 1
+          }
+        },
+        {
+          "rule_code": "RULE_LEGAL_001",
+          "rule_name": "法人变更过于频繁",
+          "severity": 50,
+          "message": "近1年法人变更 4 次，远超阈值 2 次",
+          "suggested_action": "核实股权变更背景，要求实际控制人担保",
+          "details": {
+            "changes": 4,
+            "threshold": 2
+          }
+        },
+        {
+          "rule_code": "RULE_BLACKLIST",
+          "rule_name": "黑名单命中",
+          "severity": 100,
+          "message": "命中黑名单关键字：13800138007",
+          "suggested_action": "直接拒绝，记录黑名单原因",
+          "details": {
+            "hit_item": "13800138007"
+          }
+        },
+        {
+          "rule_code": "RULE_ADDR_001",
+          "rule_name": "地址严重异常",
+          "severity": 45,
+          "message": "经营地址状态异常：异常",
+          "suggested_action": "上门核实经营地址，要求提供租赁合同",
+          "details": {
+            "status": "异常"
+          }
+        }
+      ],
+      "processed_at": "2026-06-11T03:22:03.653053"
+    },
+    {
+      "row_number": 9,
+      "merchant_id": "M008",
+      "merchant_name": "盛世物流",
+      "risk_score": 0,
+      "risk_level": "PASS",
+      "final_decision": "PASS",
+      "final_decision_display": "通过",
+      "is_whitelisted": true,
+      "review_reason": "白名单豁免",
+      "rule_hits": [],
+      "processed_at": "2026-06-11T03:22:03.653053"
+    },
+    {
+      "row_number": 10,
+      "merchant_id": "M009",
+      "merchant_name": "创新科技",
+      "risk_score": 0,
+      "risk_level": "PASS",
+      "final_decision": "PASS",
+      "final_decision_display": "通过",
+      "is_whitelisted": false,
+      "review_reason": "",
+      "rule_hits": [],
+      "processed_at": "2026-06-11T03:22:03.653053"
+    },
+    {
+      "row_number": 11,
+      "merchant_id": "M010",
+      "merchant_name": "兴旺五金",
+      "risk_score": 0,
+      "risk_level": "PASS",
+      "final_decision": "PASS",
+      "final_decision_display": "通过",
+      "is_whitelisted": false,
+      "review_reason": "",
+      "rule_hits": [],
+      "processed_at": "2026-06-11T03:22:03.653053"
+    }
+  ],
+  "created_at": "2026-06-11T03:22:03.656068",
+  "config_version": "v1.0-default"
+}

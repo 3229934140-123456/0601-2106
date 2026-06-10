@@ -1,7 +1,9 @@
 import json
 import os
+import copy
+from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -9,6 +11,7 @@ DATA_DIR = BASE_DIR / "data"
 CONFIG_PATH = DATA_DIR / "config.json"
 BATCHES_DIR = DATA_DIR / "batches"
 SAMPLES_DIR = DATA_DIR / "samples"
+VERSIONS_DIR = DATA_DIR / "config_versions"
 
 
 DEFAULT_CONFIG = {
@@ -53,8 +56,9 @@ DEFAULT_CONFIG = {
 
 
 class ConfigManager:
-    def __init__(self, config_path: Optional[Path] = None):
+    def __init__(self, config_path: Optional[Path] = None, versions_dir: Optional[Path] = None):
         self.config_path = Path(config_path) if config_path else CONFIG_PATH
+        self.versions_dir = Path(versions_dir) if versions_dir else VERSIONS_DIR
         self._ensure_config_exists()
         self._config = self._load_config()
 
@@ -317,3 +321,130 @@ class ConfigManager:
 
     def get_all(self) -> Dict[str, Any]:
         return self._config
+
+    def _ensure_versions_dir(self):
+        self.versions_dir.mkdir(parents=True, exist_ok=True)
+
+    def save_version(self, name: str, description: str = "") -> bool:
+        self._ensure_versions_dir()
+        safe_name = "".join(c if c.isalnum() or c in "-_." else "_" for c in name)
+        if not safe_name:
+            raise ValueError("版本名不能为空或全为非法字符")
+        version_file = self.versions_dir / f"{safe_name}.json"
+        if version_file.exists():
+            return False
+        version_data = {
+            "name": safe_name,
+            "description": description,
+            "created_at": datetime.now().isoformat(),
+            "config": copy.deepcopy(self._config)
+        }
+        with open(version_file, "w", encoding="utf-8") as f:
+            json.dump(version_data, f, ensure_ascii=False, indent=2)
+        return True
+
+    def list_versions(self) -> List[Dict[str, Any]]:
+        self._ensure_versions_dir()
+        versions = []
+        for f in sorted(self.versions_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+            try:
+                with open(f, "r", encoding="utf-8") as fh:
+                    data = json.load(fh)
+                versions.append({
+                    "name": data.get("name", f.stem),
+                    "description": data.get("description", ""),
+                    "created_at": data.get("created_at", ""),
+                    "file_path": str(f)
+                })
+            except Exception:
+                continue
+        return versions
+
+    def get_version(self, name: str) -> Optional[Dict[str, Any]]:
+        self._ensure_versions_dir()
+        version_file = self.versions_dir / f"{name}.json"
+        if not version_file.exists():
+            alt_files = list(self.versions_dir.glob(f"*{name}*.json"))
+            if alt_files:
+                version_file = alt_files[0]
+            else:
+                return None
+        with open(version_file, "r", encoding="utf-8") as f:
+            return json.load(f)
+
+    def load_version(self, name: str) -> bool:
+        version_data = self.get_version(name)
+        if not version_data:
+            return False
+        self._config = copy.deepcopy(version_data["config"])
+        self._save_config(self._config)
+        return True
+
+    def diff_versions(self, name_a: str, name_b: str) -> List[Dict[str, Any]]:
+        va = self.get_version(name_a)
+        vb = self.get_version(name_b)
+        if not va or not vb:
+            missing = []
+            if not va:
+                missing.append(name_a)
+            if not vb:
+                missing.append(name_b)
+            raise ValueError(f"版本不存在: {', '.join(missing)}")
+        ca = va["config"]
+        cb = vb["config"]
+        diffs = []
+        all_keys = set(list(ca.keys()) + list(cb.keys()))
+        for top_key in sorted(all_keys):
+            va_val = ca.get(top_key)
+            vb_val = cb.get(top_key)
+            if isinstance(va_val, dict) and isinstance(vb_val, dict):
+                sub_keys = set(list(va_val.keys()) + list(vb_val.keys()))
+                for sk in sorted(sub_keys):
+                    v1 = va_val.get(sk)
+                    v2 = vb_val.get(sk)
+                    if v1 != v2:
+                        diffs.append({
+                            "path": f"{top_key}.{sk}",
+                            "value_a": v1,
+                            "value_b": v2,
+                            "change": self._describe_change(v1, v2)
+                        })
+            elif isinstance(va_val, list) and isinstance(vb_val, list):
+                added = [x for x in vb_val if x not in va_val]
+                removed = [x for x in va_val if x not in vb_val]
+                if added or removed:
+                    diffs.append({
+                        "path": top_key,
+                        "value_a": va_val,
+                        "value_b": vb_val,
+                        "added": added,
+                        "removed": removed,
+                        "change": f"新增 {len(added)} 项，移除 {len(removed)} 项"
+                    })
+            else:
+                if va_val != vb_val:
+                    diffs.append({
+                        "path": top_key,
+                        "value_a": va_val,
+                        "value_b": vb_val,
+                        "change": self._describe_change(va_val, vb_val)
+                    })
+        return diffs
+
+    @staticmethod
+    def _describe_change(v1: Any, v2: Any) -> str:
+        try:
+            if isinstance(v1, (int, float)) and isinstance(v2, (int, float)):
+                diff = v2 - v1
+                pct = f"({diff:+.1f})" if isinstance(diff, float) else f"({diff:+d})"
+                return f"{v1} → {v2} {pct}"
+        except Exception:
+            pass
+        return f"{v1} → {v2}"
+
+    def delete_version(self, name: str) -> bool:
+        version_file = self.versions_dir / f"{name}.json"
+        if version_file.exists():
+            version_file.unlink()
+            return True
+        return False

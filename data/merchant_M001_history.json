@@ -1,0 +1,74 @@
+[
+  {
+    "batch_id": "20260611-025331-d7b782",
+    "screen_time": "2026-06-11T02:53:31.195286",
+    "merchant_id": "M001",
+    "merchant_name": "阳光便利店",
+    "risk_score": 100,
+    "risk_level": "REJECT",
+    "risk_level_display": "拒绝",
+    "review_reason": "黑名单命中",
+    "hit_count": 1,
+    "rule_hits": [
+      {
+        "rule_code": "RULE_BLACKLIST",
+        "rule_name": "黑名单命中",
+        "severity": 100,
+        "message": "命中黑名单关键字：张三",
+        "suggested_action": "直接拒绝，记录黑名单原因"
+      }
+    ],
+    "config_version": "",
+    "input_file": "data/samples/merchants_sample.csv"
+  },
+  {
+    "batch_id": "TEST_BATCH_01",
+    "screen_time": "2026-06-11T03:09:43.052546",
+    "merchant_id": "M001",
+    "merchant_name": "阳光便利店",
+    "risk_score": 100,
+    "risk_level": "REJECT",
+    "risk_level_display": "拒绝",
+    "review_reason": "黑名单命中",
+    "hit_count": 1,
+    "rule_hits": [
+      {
+        "rule_code": "RULE_BLACKLIST",
+        "rule_name": "黑名单命中",
+        "severity": 100,
+        "message": "命中黑名单关键字：张三",
+        "suggested_action": "直接拒绝，记录黑名单原因"
+      }
+    ],
+    "config_version": "",
+    "input_file": "data/samples/merchants_sample.csv"
+  },
+  {
+    "batch_id": "TEST_BATCH_02",
+    "screen_time": "2026-06-11T03:10:25.641266",
+    "merchant_id": "M001",
+    "merchant_name": "阳光便利店",
+    "risk_score": 0,
+    "risk_level": "PASS",
+    "risk_level_display": "通过",
+    "review_reason": "",
+    "hit_count": 0,
+    "rule_hits": [],
+    "config_version": "",
+    "input_file": "data/samples/merchants_sample.csv"
+  },
+  {
+    "batch_id": "BATCH_V1",
+    "screen_time": "2026-06-11T03:22:03.656068",
+    "merchant_id": "M001",
+    "merchant_name": "阳光便利店",
+    "risk_score": 0,
+    "risk_level": "PASS",
+    "risk_level_display": "通过",
+    "review_reason": "",
+    "hit_count": 0,
+    "rule_hits": [],
+    "config_version": "v1.0-default",
+    "input_file": "data/samples/merchants_sample.csv"
+  }
+]

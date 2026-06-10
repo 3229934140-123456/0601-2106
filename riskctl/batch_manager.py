@@ -29,7 +29,8 @@ class BatchManager:
             "error_count": batch.error_count,
             "error_rows": batch.error_rows,
             "results": [r.to_dict() for r in batch.results],
-            "created_at": batch.created_at.isoformat()
+            "created_at": batch.created_at.isoformat(),
+            "config_version": batch.config_version
         }
         with open(file_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
@@ -57,8 +58,14 @@ class BatchManager:
             reject_count=data["reject_count"],
             error_count=data["error_count"],
             error_rows=data.get("error_rows", []),
-            created_at=datetime.fromisoformat(data["created_at"])
+            created_at=datetime.fromisoformat(data["created_at"]),
+            config_version=data.get("config_version", "")
         )
+
+        expected_total = batch.pass_count + batch.review_count + batch.reject_count + batch.error_count
+        if batch.total_count != expected_total:
+            batch.valid_count = batch.pass_count + batch.review_count + batch.reject_count
+            batch.total_count = expected_total
 
         for rd in data["results"]:
             m = Merchant(
@@ -111,16 +118,27 @@ class BatchManager:
             try:
                 with open(f, "r", encoding="utf-8") as fh:
                     data = json.load(fh)
+                pass_c = data["pass_count"]
+                review_c = data["review_count"]
+                reject_c = data["reject_count"]
+                error_c = data["error_count"]
+                valid_c = data.get("valid_count", data.get("total_count", pass_c + review_c + reject_c))
+                total_c = data.get("total_count", valid_c)
+                expected_total = pass_c + review_c + reject_c + error_c
+                if total_c != expected_total:
+                    valid_c = pass_c + review_c + reject_c
+                    total_c = expected_total
                 batches.append({
                     "batch_id": data["batch_id"],
                     "input_file": data["input_file"],
-                    "total": data.get("total_count", data.get("valid_count", 0)),
-                    "valid": data.get("valid_count", data.get("total_count", 0)),
-                    "pass": data["pass_count"],
-                    "review": data["review_count"],
-                    "reject": data["reject_count"],
-                    "error": data["error_count"],
+                    "total": total_c,
+                    "valid": valid_c,
+                    "pass": pass_c,
+                    "review": review_c,
+                    "reject": reject_c,
+                    "error": error_c,
                     "created_at": data["created_at"],
+                    "config_version": data.get("config_version", ""),
                     "file_path": str(f)
                 })
             except Exception:

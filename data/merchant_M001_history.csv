@@ -1,0 +1,5 @@
+﻿序号,批次号,筛查时间,商户编号,商户名称,风险分数,风险等级,等级说明,命中项数,命中规则编码,命中规则名称,复核原因,配置版本,来源文件
+1,20260611-025331-d7b782,2026-06-11 02:53:31,M001,阳光便利店,100,REJECT,拒绝,1,RULE_BLACKLIST,黑名单命中,黑名单命中,,data/samples/merchants_sample.csv
+2,TEST_BATCH_01,2026-06-11 03:09:43,M001,阳光便利店,100,REJECT,拒绝,1,RULE_BLACKLIST,黑名单命中,黑名单命中,,data/samples/merchants_sample.csv
+3,TEST_BATCH_02,2026-06-11 03:10:25,M001,阳光便利店,0,PASS,通过,0,,,,,data/samples/merchants_sample.csv
+4,BATCH_V1,2026-06-11 03:22:03,M001,阳光便利店,0,PASS,通过,0,,,,v1.0-default,data/samples/merchants_sample.csv
