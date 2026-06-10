@@ -83,6 +83,186 @@ class ConfigManager:
                 return default
         return value
 
+    THRESHOLD_SCHEMA = {
+        "min_operation_years": {
+            "type": float,
+            "min": 0.0,
+            "max": 50.0,
+            "integer_only": False,
+            "label": "最低经营年限",
+            "desc": "应在 0~50 年之间"
+        },
+        "max_volatility_ratio": {
+            "type": float,
+            "min": 0.01,
+            "max": 2.0,
+            "integer_only": False,
+            "label": "交易波动阈值",
+            "desc": "应在 0.01~2.0 之间（1.0表示波动100%）"
+        },
+        "max_legal_person_change_count": {
+            "type": int,
+            "min": 0,
+            "max": 20,
+            "integer_only": True,
+            "label": "法人变更阈值",
+            "desc": "应为 0~20 之间的整数"
+        },
+        "duplicate_contact_threshold": {
+            "type": int,
+            "min": 2,
+            "max": 100,
+            "integer_only": True,
+            "label": "联系方式重复阈值",
+            "desc": "应为 2~100 之间的整数"
+        },
+        "pass_score_min": {
+            "type": int,
+            "min": 0,
+            "max": 200,
+            "integer_only": True,
+            "label": "通过分数下限",
+            "desc": "应为 0~200 之间的整数"
+        },
+        "pass_score_max": {
+            "type": int,
+            "min": 0,
+            "max": 200,
+            "integer_only": True,
+            "label": "通过分数上限",
+            "desc": "应为 0~200 之间的整数"
+        },
+        "review_score_min": {
+            "type": int,
+            "min": 0,
+            "max": 200,
+            "integer_only": True,
+            "label": "复核分数下限",
+            "desc": "应为 0~200 之间的整数"
+        },
+        "review_score_max": {
+            "type": int,
+            "min": 0,
+            "max": 200,
+            "integer_only": True,
+            "label": "复核分数上限",
+            "desc": "应为 0~200 之间的整数"
+        },
+        "reject_score_min": {
+            "type": int,
+            "min": 0,
+            "max": 200,
+            "integer_only": True,
+            "label": "拒绝分数下限",
+            "desc": "应为 0~200 之间的整数"
+        },
+    }
+
+    SCORE_RANGE_KEYS = [
+        "pass_score_min", "pass_score_max",
+        "review_score_min", "review_score_max",
+        "reject_score_min"
+    ]
+
+    def validate_threshold_value(self, key: str, raw_value: str) -> Any:
+        if key not in self.THRESHOLD_SCHEMA:
+            raise ValueError(
+                f"未知的阈值参数: '{key}'\n"
+                f"可用参数: {', '.join(self.THRESHOLD_SCHEMA.keys())}"
+            )
+
+        schema = self.THRESHOLD_SCHEMA[key]
+        label = schema["label"]
+
+        cleaned = str(raw_value).strip()
+
+        if schema["integer_only"]:
+            if not self._is_integer_like(cleaned):
+                raise ValueError(
+                    f"[{label}] '{key}' 必须是整数\n"
+                    f"  你输入的是: '{raw_value}'\n"
+                    f"  说明: {schema['desc']}"
+                )
+            parsed_val = int(cleaned)
+        else:
+            try:
+                parsed_val = float(cleaned)
+            except (ValueError, TypeError):
+                raise ValueError(
+                    f"[{label}] '{key}' 必须是数字\n"
+                    f"  你输入的是: '{raw_value}'\n"
+                    f"  说明: {schema['desc']}"
+                )
+
+        if parsed_val < schema["min"] or parsed_val > schema["max"]:
+            raise ValueError(
+                f"[{label}] '{key}' 超出合理范围\n"
+                f"  你输入的是: {parsed_val}\n"
+                f"  允许范围: {schema['min']} ~ {schema['max']}\n"
+                f"  说明: {schema['desc']}"
+            )
+
+        return parsed_val
+
+    def validate_score_consistency(
+        self, updated_key: Optional[str] = None,
+        temp_value: Optional[Any] = None
+    ) -> List[str]:
+        issues = []
+        t = dict(self._config.get("thresholds", {}))
+        if updated_key and temp_value is not None:
+            t[updated_key] = temp_value
+
+        for k in self.SCORE_RANGE_KEYS:
+            if k not in t or t[k] is None:
+                issues.append(f"分数区间参数缺失: {k}")
+
+        if issues:
+            return issues
+
+        p_min, p_max = t["pass_score_min"], t["pass_score_max"]
+        r_min, r_max = t["review_score_min"], t["review_score_max"]
+        j_min = t["reject_score_min"]
+
+        if p_min > p_max:
+            issues.append(
+                f"[通过区间] 下限({p_min}) > 上限({p_max})，上下限颠倒"
+            )
+
+        if r_min > r_max:
+            issues.append(
+                f"[复核区间] 下限({r_min}) > 上限({r_max})，上下限颠倒"
+            )
+
+        if p_max + 1 != r_min:
+            issues.append(
+                f"[区间衔接] 通过上限({p_max}) + 1 应 = 复核下限({r_min})，"
+                f"差值为 {r_min - p_max - 1}"
+            )
+
+        if r_max + 1 != j_min:
+            issues.append(
+                f"[区间衔接] 复核上限({r_max}) + 1 应 = 拒绝下限({j_min})，"
+                f"差值为 {j_min - r_max - 1}"
+            )
+
+        if not (p_max < r_min <= r_max < j_min):
+            issues.append(
+                f"[区间交叉] 顺序应为: 通过(0~{p_max}) < 复核({r_min}~{r_max}) < 拒绝({j_min}~)，"
+                f"当前存在重叠或顺序混乱"
+            )
+
+        return issues
+
+    @staticmethod
+    def _is_integer_like(s: str) -> bool:
+        s = s.strip()
+        if not s:
+            return False
+        if s.startswith("-"):
+            s = s[1:]
+        return s.isdigit()
+
     def set_threshold(self, key: str, value: Any):
         if "thresholds" not in self._config:
             self._config["thresholds"] = {}

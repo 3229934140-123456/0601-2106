@@ -49,8 +49,12 @@ def check(input_file, batch_id, no_save, no_export, output_dir):
             console=console
         ) as progress:
             t1 = progress.add_task("读取CSV文件...", total=None)
-            merchants, import_errors = DataImporter.read_csv(input_file)
+            merchants, import_errors, total_raw_rows = DataImporter.read_csv(input_file)
             progress.update(t1, completed=True, description="CSV读取完成")
+
+            if not merchants and not import_errors:
+                console.print("[red]CSV文件没有任何数据行[/red]")
+                sys.exit(1)
 
             if not merchants:
                 console.print("[red]没有可处理的有效商户数据[/red]")
@@ -59,11 +63,10 @@ def check(input_file, batch_id, no_save, no_export, output_dir):
                 sys.exit(1)
 
             total_valid = len(merchants)
-            total_raw = total_valid + len(import_errors)
-            console.print(f"[green]✓[/green] 成功读取 [bold]{total_valid}[/bold] 条有效商户记录")
+            console.print(f"[green]✓[/green] 原始清单共 [bold]{total_raw_rows}[/bold] 行")
+            console.print(f"[green]✓[/green] 成功解析 [bold]{total_valid}[/bold] 条有效商户记录")
             if import_errors:
                 console.print(f"[yellow]⚠[/yellow] CSV解析错误 [bold]{len(import_errors)}[/bold] 行")
-                console.print(f"[dim]原始清单共 {total_raw} 行（含错误行）[/dim]")
 
             t2 = progress.add_task("风控规则评估...", total=total_valid)
             engine = RiskRuleEngine(cfg)
@@ -91,12 +94,11 @@ def check(input_file, batch_id, no_save, no_export, output_dir):
             progress.update(t2, completed=True, description="风控评估完成")
 
         all_errors = import_errors + errors
-        total_count = total_valid + len(errors)
         batch = BatchResult(
             batch_id=batch_id or batch_mgr.generate_batch_id(),
             input_file=input_file,
-            total_count=total_count,
-            valid_count=total_valid - len(errors),
+            total_count=total_raw_rows,
+            valid_count=len(results),
             error_rows=all_errors,
             error_count=len(all_errors),
             results=results
@@ -153,15 +155,19 @@ def _show_summary(batch: BatchResult):
     )
     summary_table.add_column("指标", style="bold")
     summary_table.add_column("数值", justify="right")
-    summary_table.add_column("占比(总数)", justify="right")
-    summary_table.add_column("占比(有效)", justify="right")
+    summary_table.add_column("占原始清单", justify="right")
+    summary_table.add_column("占有效记录", justify="right")
 
-    summary_table.add_row("总记录数(原始)", str(s["total_count"]), "-", "-")
+    check_sum = s["pass_count"] + s["review_count"] + s["reject_count"] + s["error_count"]
+    total_match = "✓" if check_sum == s["total_count"] else "✗"
+
+    summary_table.add_row(f"原始清单行数 ({total_match})", str(s["total_count"]), "-", "-")
     summary_table.add_row("有效评估数", str(s["valid_count"]), "-", "-")
     summary_table.add_row("[green]通过[/green]", f"[green]{s['pass_count']}[/green]", f"[green]{s['pass_rate']}[/green]", f"[green]{s['valid_pass_rate']}[/green]")
     summary_table.add_row("[yellow]需复核[/yellow]", f"[yellow]{s['review_count']}[/yellow]", f"[yellow]{s['review_rate']}[/yellow]", f"[yellow]{s['valid_review_rate']}[/yellow]")
     summary_table.add_row("[red]拒绝[/red]", f"[red]{s['reject_count']}[/red]", f"[red]{s['reject_rate']}[/red]", f"[red]{s['valid_reject_rate']}[/red]")
-    summary_table.add_row("[red]错误[/red]", f"[red]{s['error_count']}[/red]", f"[red]{s['error_rate']}[/red]", "-")
+    summary_table.add_row("[red]错误行[/red]", f"[red]{s['error_count']}[/red]", f"[red]{s['error_rate']}[/red]", "-")
+    summary_table.add_row("合计校验", str(check_sum), "-", "-")
 
     console.print()
     console.print(summary_table)
@@ -479,17 +485,34 @@ def config_show(section):
 @config.command("set-threshold")
 @click.argument("key")
 @click.argument("value")
-def config_set_threshold(key, value):
+@click.option("--force", "-f", is_flag=True, help="强制写入，跳过区间一致性校验")
+def config_set_threshold(key, value, force):
     """设置阈值参数，如 min_operation_years 1"""
     try:
-        if "." in value:
-            val = float(value)
-        else:
-            val = int(value)
-    except ValueError:
-        val = value
+        val = cfg.validate_threshold_value(key, value)
+    except ValueError as e:
+        console.print(f"[red]✗ 阈值输入错误:[/red]\n{e}")
+        sys.exit(1)
+
+    issues = cfg.validate_score_consistency(updated_key=key, temp_value=val)
+    if issues and not force:
+        issue_lines = "\n".join(f"  • {i}" for i in issues)
+        console.print(
+            f"[yellow]⚠ 分数区间一致性警告:[/yellow]\n{issue_lines}\n\n"
+            f"[dim]如需强制设置，请加 --force 参数:[/dim]\n"
+            f"  riskctl config set-threshold {key} {value} --force"
+        )
+        sys.exit(1)
+
     cfg.set_threshold(key, val)
     console.print(f"[green]✓ 阈值已设置:[/green] thresholds.{key} = {val}")
+    if key in ConfigManager.SCORE_RANGE_KEYS:
+        t = cfg.get("thresholds", {})
+        console.print(
+            f"[dim]当前区间: 通过[{t['pass_score_min']}~{t['pass_score_max']}] → "
+            f"复核[{t['review_score_min']}~{t['review_score_max']}] → "
+            f"拒绝[≥{t['reject_score_min']}][/dim]"
+        )
 
 
 @config.command("add-blacklist")
@@ -579,27 +602,32 @@ def history(limit):
     t.add_column("#", justify="right", width=4)
     t.add_column("批次号", style="bold")
     t.add_column("输入文件", overflow="fold")
-    t.add_column("总数", justify="right")
+    t.add_column("原始行", justify="right")
     t.add_column("通过", justify="right", style="green")
     t.add_column("复核", justify="right", style="yellow")
     t.add_column("拒绝", justify="right", style="red")
-    t.add_column("错误", justify="right")
+    t.add_column("错误", justify="right", style="magenta")
+    t.add_column("通过率", justify="right")
     t.add_column("创建时间")
 
     for i, b in enumerate(batches, 1):
+        total = b["total"]
+        pass_rate = f"{(b['pass']/total*100):.0f}%" if total > 0 else "0%"
         t.add_row(
             str(i),
             b["batch_id"],
             Path(b["input_file"]).name,
-            str(b["total"]),
+            str(total),
             str(b["pass"]),
             str(b["review"]),
             str(b["reject"]),
             str(b["error"]),
+            pass_rate,
             b["created_at"].replace("T", " ")[:19]
         )
     console.print(t)
-    console.print("\n[dim]提示: 可使用批次号前缀匹配，如 'riskctl report 202501'[/dim]")
+    console.print("\n[dim]校验: 原始行 = 通过 + 复核 + 拒绝 + 错误[/dim]")
+    console.print("[dim]提示: 可使用批次号前缀匹配，如 'riskctl report 202501'[/dim]")
 
 
 @cli.command()
@@ -633,6 +661,378 @@ def sample():
     console.print("[dim]地址异常、联系方式重复、黑名单、格式错误等典型场景[/dim]")
     console.print("\n[bold]使用示例:[/bold]")
     console.print("  riskctl check data/samples/merchants_sample.csv")
+
+
+@cli.command()
+@click.argument("batch_id_a")
+@click.argument("batch_id_b")
+@click.option("--top-rules", "-n", type=int, default=10, help="显示命中次数前N的规则（默认10）")
+def compare(batch_id_a, batch_id_b, top_rules):
+    """对比两个历史批次的通过率、拒绝率和命中规则变化"""
+    bid_a = batch_mgr.find_batch_partial(batch_id_a) or batch_id_a
+    bid_b = batch_mgr.find_batch_partial(batch_id_b) or batch_id_b
+    batch_a = batch_mgr.load_batch(bid_a)
+    batch_b = batch_mgr.load_batch(bid_b)
+
+    if not batch_a:
+        console.print(f"[red]✗ 找不到批次A:[/red] {batch_id_a}")
+        sys.exit(1)
+    if not batch_b:
+        console.print(f"[red]✗ 找不到批次B:[/red] {batch_id_b}")
+        sys.exit(1)
+
+    def _metrics(b):
+        s = b.summary()
+        total = s["total_count"]
+        valid = s["valid_count"]
+        def _pct(n, d):
+            return (n / d * 100) if d > 0 else 0.0
+        return {
+            "total": total,
+            "valid": valid,
+            "pass": s["pass_count"],
+            "review": s["review_count"],
+            "reject": s["reject_count"],
+            "error": s["error_count"],
+            "pass_pct_t": _pct(s["pass_count"], total),
+            "review_pct_t": _pct(s["review_count"], total),
+            "reject_pct_t": _pct(s["reject_count"], total),
+            "error_pct_t": _pct(s["error_count"], total),
+            "pass_pct_v": _pct(s["pass_count"], valid),
+            "review_pct_v": _pct(s["review_count"], valid),
+            "reject_pct_v": _pct(s["reject_count"], valid),
+            "created": s["created_at"]
+        }
+
+    ma = _metrics(batch_a)
+    mb = _metrics(batch_b)
+
+    short_a = bid_a[:16]
+    short_b = bid_b[:16]
+
+    console.rule(f"[bold blue]批次对比: {short_a}...  vs  {short_b}...")
+    console.print(f"  [cyan]批次A[/cyan]: {bid_a} ({ma['created'][:19].replace('T',' ')})  原始行={ma['total']}  有效={ma['valid']}")
+    console.print(f"  [cyan]批次B[/cyan]: {bid_b} ({mb['created'][:19].replace('T',' ')})  原始行={mb['total']}  有效={mb['valid']}")
+
+    def _diff(old, new, is_pct=True):
+        delta = new - old
+        sign = "+" if delta >= 0 else ""
+        unit = "pp" if is_pct else ""
+        return delta, f"{sign}{delta:.1f}{unit}"
+
+    def _style_delta(delta, reverse=False):
+        if reverse:
+            delta = -delta
+        if delta >= 5:
+            return "red"
+        elif delta >= 1:
+            return "yellow"
+        elif delta <= -5:
+            return "green"
+        elif delta <= -1:
+            return "cyan"
+        return "white"
+
+    console.print()
+    mt = Table(title="[bold]核心指标对比（占原始清单）[/bold]", box=box.ROUNDED, header_style="bold cyan")
+    mt.add_column("指标", style="bold")
+    mt.add_column(f"批次A\n{short_a}...", justify="right")
+    mt.add_column(f"批次B\n{short_b}...", justify="right")
+    mt.add_column("变化", justify="right")
+    mt.add_column("趋势", justify="center")
+
+    for label, ka, kb, reverse in [
+        ("通过率(原始)", "pass_pct_t", "pass_pct_t", False),
+        ("复核率(原始)", "review_pct_t", "review_pct_t", False),
+        ("拒绝率(原始)", "reject_pct_t", "reject_pct_t", True),
+        ("错误率(原始)", "error_pct_t", "error_pct_t", True),
+    ]:
+        d, d_str = _diff(ma[ka], mb[kb])
+        color = _style_delta(d, reverse=reverse)
+        arrow = "↑" if d > 0 else ("↓" if d < 0 else "→")
+        mt.add_row(label, f"{ma[ka]:.1f}%", f"{mb[kb]:.1f}%", d_str, f"[{color}]{arrow}[/{color}]")
+    console.print(mt)
+
+    mt2 = Table(title="[bold]核心指标对比（占有效记录）[/bold]", box=box.ROUNDED, header_style="bold magenta")
+    mt2.add_column("指标", style="bold")
+    mt2.add_column(f"批次A\n{short_a}...", justify="right")
+    mt2.add_column(f"批次B\n{short_b}...", justify="right")
+    mt2.add_column("变化", justify="right")
+    mt2.add_column("趋势", justify="center")
+    for label, ka, kb, reverse in [
+        ("通过率(有效)", "pass_pct_v", "pass_pct_v", False),
+        ("复核率(有效)", "review_pct_v", "review_pct_v", False),
+        ("拒绝率(有效)", "reject_pct_v", "reject_pct_v", True),
+    ]:
+        d, d_str = _diff(ma[ka], mb[kb])
+        color = _style_delta(d, reverse=reverse)
+        arrow = "↑" if d > 0 else ("↓" if d < 0 else "→")
+        mt2.add_row(label, f"{ma[ka]:.1f}%", f"{mb[kb]:.1f}%", d_str, f"[{color}]{arrow}[/{color}]")
+    console.print(mt2)
+
+    def _rule_stats(results):
+        from collections import Counter
+        counter = Counter()
+        detail = {}
+        for r in results:
+            for h in r.rule_hits:
+                key = f"{h.rule_code}|{h.rule_name}"
+                counter[key] += 1
+                if key not in detail:
+                    detail[key] = {"code": h.rule_code, "name": h.rule_name, "severity_avg": []}
+                detail[key]["severity_avg"].append(h.severity)
+        stats = {}
+        for k, cnt in counter.items():
+            d = detail[k]
+            stats[k] = {
+                "code": d["code"],
+                "name": d["name"],
+                "count": cnt,
+                "severity_avg": sum(d["severity_avg"]) / len(d["severity_avg"])
+            }
+        return stats
+
+    sa = _rule_stats(batch_a.results)
+    sb = _rule_stats(batch_b.results)
+    all_keys = set(sa.keys()) | set(sb.keys())
+
+    va = batch_a.valid_count or 1
+    vb = batch_b.valid_count or 1
+
+    rule_rows = []
+    for k in all_keys:
+        info = sa.get(k, sb[k])
+        ca = sa.get(k, {}).get("count", 0)
+        cb = sb.get(k, {}).get("count", 0)
+        pa = ca / va * 100
+        pb = cb / vb * 100
+        delta = pb - pa
+        cnt_delta = cb - ca
+        rule_rows.append((info["code"], info["name"], ca, pa, cb, pb, cnt_delta, delta))
+
+    rule_rows.sort(key=lambda x: -abs(x[7]))
+    rule_rows = rule_rows[:top_rules]
+
+    rt = Table(
+        title=f"[bold]命中规则变化对比（TOP{len(rule_rows)}，按变化幅度）[/bold]",
+        box=box.ROUNDED,
+        header_style="bold yellow",
+        show_lines=True
+    )
+    rt.add_column("规则代码", style="bold")
+    rt.add_column("规则名称", overflow="fold")
+    rt.add_column(f"A命中\n({va}条)", justify="right")
+    rt.add_column(f"A占比", justify="right")
+    rt.add_column(f"B命中\n({vb}条)", justify="right")
+    rt.add_column(f"B占比", justify="right")
+    rt.add_column("次数变化", justify="right")
+    rt.add_column("占比变化", justify="right")
+    rt.add_column("风险\n趋势", justify="center")
+
+    for code, name, ca, pa, cb, pb, cd, pd in rule_rows:
+        if pd >= 5:
+            trend = "[red]▲▲ 升高[/red]"
+        elif pd >= 1:
+            trend = "[yellow]▲ 升高[/yellow]"
+        elif pd <= -5:
+            trend = "[green]▼▼ 下降[/green]"
+        elif pd <= -1:
+            trend = "[cyan]▼ 下降[/cyan]"
+        else:
+            trend = "[white]— 稳定[/white]"
+        cd_str = f"{'+' if cd >= 0 else ''}{cd}"
+        pd_str = f"{'+' if pd >= 0 else ''}{pd:.1f}pp"
+        if pd >= 5:
+            ca_s, cb_s = f"{ca}", f"[bold red]{cb}[/bold red]"
+            pa_s, pb_s = f"{pa:.1f}%", f"[bold red]{pb:.1f}%[/bold red]"
+            cd_str, pd_str = f"[red]{cd_str}[/red]", f"[bold red]{pd_str}[/bold red]"
+        elif pd <= -5:
+            ca_s, cb_s = f"{ca}", f"[green]{cb}[/green]"
+            pa_s, pb_s = f"{pa:.1f}%", f"[green]{pb:.1f}%[/green]"
+            cd_str, pd_str = f"[green]{cd_str}[/green]", f"[green]{pd_str}[/green]"
+        else:
+            ca_s, cb_s = str(ca), str(cb)
+            pa_s, pb_s = f"{pa:.1f}%", f"{pb:.1f}%"
+        rt.add_row(code, name, ca_s, pa_s, cb_s, pb_s, cd_str, pd_str, trend)
+    console.print(rt)
+
+    top_up = [r for r in rule_rows if r[7] >= 1][:3]
+    top_down = [r for r in rule_rows if r[7] <= -1][:3]
+    if top_up or top_down:
+        console.print()
+        insigths = []
+        if top_up:
+            insigths.append(f"[red]风险明显升高规则:[/red] " +
+                "、".join(f"{r[1]}(+{r[7]:.1f}pp)" for r in top_up))
+        if top_down:
+            insigths.append(f"[green]风险明显下降规则:[/green] " +
+                "、".join(f"{r[1]}({r[7]:.1f}pp)" for r in top_down))
+        console.print(Panel("\n".join(insigths), title="[bold]观察结论[/bold]", border_style="cyan"))
+
+
+@cli.command()
+@click.argument("merchant_id")
+@click.option("--show-hits", "-d", is_flag=True, help="显示每次筛查的命中项详情")
+def merchant(merchant_id, show_hits):
+    """按商户编号查询历史筛查记录与分数变化"""
+    batches = batch_mgr.list_batches(limit=200)
+    records = []
+
+    for b_meta in batches:
+        batch = batch_mgr.load_batch(b_meta["batch_id"])
+        if not batch:
+            continue
+        for r in batch.results:
+            if r.merchant.merchant_id == merchant_id or r.merchant.merchant_name == merchant_id:
+                records.append({
+                    "batch_id": batch.batch_id,
+                    "created_at": batch.created_at,
+                    "input_file": batch.input_file,
+                    "merchant_name": r.merchant.merchant_name,
+                    "merchant_id": r.merchant.merchant_id,
+                    "score": r.risk_score,
+                    "level": r.final_decision,
+                    "level_display": r.final_decision.display_name,
+                    "reason": r.review_reason,
+                    "whitelisted": r.is_whitelisted,
+                    "rule_hits": r.rule_hits,
+                    "hit_count": len(r.rule_hits)
+                })
+                break
+
+    if not records:
+        console.print(f"[yellow]⚠ 未找到商户的历史筛查记录:[/yellow] {merchant_id}")
+        console.print("[dim]提示: 支持按商户编号或商户名称查询[/dim]")
+        return
+
+    records.sort(key=lambda x: x["created_at"])
+
+    info = records[-1]
+    console.rule(f"[bold blue]商户历史筛查: {info['merchant_name']} ({info['merchant_id']})")
+    console.print(f"[cyan]共找到[/cyan] {len(records)} 次历史筛查记录，时间跨度: "
+          f"{records[0]['created_at'].strftime('%Y-%m-%d')} ~ {records[-1]['created_at'].strftime('%Y-%m-%d')}")
+
+    if len(records) >= 2:
+        prev = records[-2]
+        curr = records[-1]
+        sd = curr["score"] - prev["score"]
+        color_map = {"PASS": "green", "REVIEW": "yellow", "REJECT": "red"}
+        level_changed = prev["level"] != curr["level"]
+        panel_lines = []
+        panel_lines.append(
+            f"最近一次结论: [{color_map[curr['level'].value]}][bold]{curr['level_display']}[/bold][/{color_map[curr['level'].value]}]"
+            f"  (上次: [{color_map[prev['level'].value]}]{prev['level_display']}[/{color_map[prev['level'].value]}])"
+        )
+        score_color = "red" if sd >= 20 else ("yellow" if sd >= 5 else ("green" if sd <= -20 else "cyan"))
+        arrow = "↑" if sd > 0 else ("↓" if sd < 0 else "=")
+        panel_lines.append(
+            f"分数变化: {prev['score']} → {curr['score']}  [{score_color}]({arrow}{abs(sd)} 分)[/{score_color}]"
+        )
+        if level_changed:
+            panel_lines.append(f"[bold yellow]※ 结论发生变化，需要重点关注[/bold yellow]")
+        curr_codes = set(h.rule_code for h in curr["rule_hits"])
+        prev_codes = set(h.rule_code for h in prev["rule_hits"])
+        new_hits = curr_codes - prev_codes
+        cleared_hits = prev_codes - curr_codes
+        if new_hits:
+            nh_names = [h.rule_name for h in curr["rule_hits"] if h.rule_code in new_hits]
+            panel_lines.append(f"[red]新增命中项:[/red] {', '.join(nh_names)}")
+        if cleared_hits:
+            ch_names = [h.rule_name for h in prev["rule_hits"] if h.rule_code in cleared_hits]
+            panel_lines.append(f"[green]已消除项:[/green] {', '.join(ch_names)}")
+        console.print(Panel("\n".join(panel_lines), title="[bold]最近两次对比[/bold]", border_style="yellow"))
+
+    ht = Table(title="[bold]历史筛查时序[/bold]", box=box.ROUNDED, header_style="bold blue")
+    ht.add_column("#", justify="right", width=3)
+    ht.add_column("批次号", style="bold")
+    ht.add_column("筛查时间", justify="right")
+    ht.add_column("结论")
+    ht.add_column("分数", justify="right")
+    ht.add_column("命中数", justify="right")
+    ht.add_column("原因", overflow="fold")
+    ht.add_column("来源文件", overflow="fold")
+
+    for i, r in enumerate(records, 1):
+        c = r["level"].color
+        marker = ""
+        if i == len(records):
+            marker = " [cyan]◀最新[/cyan]"
+        ht.add_row(
+            str(i),
+            r["batch_id"],
+            r["created_at"].strftime("%m-%d %H:%M"),
+            f"[{c}]{r['level_display']}[/{c}]{marker}",
+            str(r["score"]),
+            str(r["hit_count"]),
+            r["reason"] or "-",
+            Path(r["input_file"]).name
+        )
+    console.print(ht)
+
+    if len(records) >= 2:
+        scores = [r["score"] for r in records]
+        score_table = Table(title="[bold]分数变化趋势[/bold]", box=box.ROUNDED, header_style="bold magenta")
+        score_table.add_column("序号", justify="right")
+        score_table.add_column("时间", justify="right")
+        score_table.add_column("分数", justify="right")
+        score_table.add_column("环比", justify="right")
+        score_table.add_column("可视化", overflow="fold")
+        for i, r in enumerate(records):
+            score = r["score"]
+            bar_len = min(50, max(0, int(score / 2)))
+            bar = "█" * bar_len
+            if i == 0:
+                delta_str = "-"
+                bar = f"[green]{bar}[/green]" if score <= 30 else (f"[yellow]{bar}[/yellow]" if score <= 70 else f"[red]{bar}[/red]")
+            else:
+                delta = score - records[i-1]["score"]
+                if delta > 0:
+                    delta_str = f"[red]+{delta}[/red]"
+                    bar = f"[red]{bar}[/red]"
+                elif delta < 0:
+                    delta_str = f"[green]{delta}[/green]"
+                    bar = f"[green]{bar}[/green]"
+                else:
+                    delta_str = "0"
+                    bar = f"[cyan]{bar}[/cyan]"
+            score_table.add_row(
+                str(i + 1),
+                r["created_at"].strftime("%m-%d"),
+                str(score),
+                delta_str,
+                bar
+            )
+        max_s, min_s = max(scores), min(scores)
+        avg_s = sum(scores) / len(scores)
+        trend_s = scores[-1] - scores[0]
+        score_table.add_row(
+            "[bold]统计[/bold]", "",
+            f"[bold]min={min_s} avg={avg_s:.0f} max={max_s}[/bold]",
+            f"[bold]{'+' if trend_s>=0 else ''}{trend_s}[/bold]",
+            ""
+        )
+        console.print(score_table)
+
+    if show_hits:
+        console.print()
+        for i, r in enumerate(records):
+            tag = " ◀最新" if i == len(records) - 1 else ""
+            hits_panel_lines = []
+            if r["rule_hits"]:
+                for h in r["rule_hits"]:
+                    sev_color = "red" if h.severity >= 40 else ("yellow" if h.severity >= 20 else "white")
+                    hits_panel_lines.append(
+                        f"  • [{sev_color}]{h.rule_code}[/{sev_color}] {h.rule_name} "
+                        f"({h.severity}分): {h.message}"
+                    )
+            else:
+                hits_panel_lines.append("  [green]无命中，状态良好[/green]")
+            console.print(Panel(
+                "\n".join(hits_panel_lines),
+                title=f"[bold]#{i+1} {r['batch_id']} | {r['created_at'].strftime('%Y-%m-%d')} "
+                      f"| {r['level_display']} | {r['score']}分{tag}[/bold]",
+                border_style=r["level"].color
+            ))
 
 
 def main():

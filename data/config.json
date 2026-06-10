@@ -35,7 +35,6 @@
     "contact_duplicate": "排查关联商户，要求联系人书面说明关系"
   },
   "blacklist": [
-    "张三",
     "13800138007"
   ],
   "whitelist": [

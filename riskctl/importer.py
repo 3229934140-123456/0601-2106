@@ -40,13 +40,14 @@ COLUMN_ALIASES = {
 
 class DataImporter:
     @staticmethod
-    def read_csv(file_path: str) -> Tuple[List[Merchant], List[Dict[str, Any]]]:
+    def read_csv(file_path: str) -> Tuple[List[Merchant], List[Dict[str, Any]], int]:
         path = Path(file_path)
         if not path.exists():
             raise FileNotFoundError(f"文件不存在: {file_path}")
 
         merchants: List[Merchant] = []
         errors: List[Dict[str, Any]] = []
+        data_row_count = 0
 
         with open(path, "r", encoding="utf-8-sig", newline="") as f:
             reader = csv.DictReader(f)
@@ -63,6 +64,7 @@ class DataImporter:
                 )
 
             for idx, row in enumerate(reader, start=2):
+                data_row_count += 1
                 try:
                     merchant = DataImporter._parse_row(row, idx)
                     merchants.append(merchant)
@@ -74,7 +76,7 @@ class DataImporter:
                         "error": str(e),
                         "raw_data": dict(row)
                     })
-        return merchants, errors
+        return merchants, errors, data_row_count
 
     @staticmethod
     def _normalize_headers(headers: List[str]) -> List[str]:
